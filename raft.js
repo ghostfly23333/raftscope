@@ -51,6 +51,9 @@ var makeElectionAlarm = function(now) {
   return now + (Math.random() + 1) * ELECTION_TIMEOUT;
 };
 
+// 将函数暴露到raft对象上
+raft.makeElectionAlarm = makeElectionAlarm;
+
 raft.server = function(id, peers) {
   return {
     id: id,
@@ -307,7 +310,8 @@ raft.drop = function(model, message) {
 raft.timeout = function(model, server) {
   server.state = 'follower';
   server.electionAlarm = 0;
-  rules.startNewElection(model, server);
+  // 立即更新一次状态机，触发选举
+  raft.update(model);
 };
 
 raft.clientRequest = function(model, server) {
@@ -389,6 +393,257 @@ raft.setupLogReplicationScenario = function(model) {
   raft.clientRequest(model, s1);
   raft.clientRequest(model, s1);
   raft.clientRequest(model, s1);
+};
+
+// 日志记录函数
+raft.log = function(message) {
+    var logContainer = $('#log-container');
+    var time = new Date().toLocaleTimeString();
+    logContainer.append('<div>[' + time + '] ' + message + '</div>');
+    logContainer.scrollTop(logContainer[0].scrollHeight);
+};
+
+// 复杂场景测试
+raft.testComplexScenario = function(model) {
+    // 清空日志
+    $('#log-container').empty();
+    
+    return new Promise(function(resolve) {
+        var startTime = model.time;
+        var currentStep = 0;
+        var steps = [
+            // 步骤1: Server 1 成为 leader
+            function() {
+                raft.log('步骤1: 等待Server 1成为leader...');
+                var server1 = model.servers[0];
+                // 强制其他服务器的选举超时时间晚于Server 1
+                model.servers.forEach(function(server) {
+                    if (server.id !== 1) {
+                        server.electionAlarm = model.time + ELECTION_TIMEOUT * 2;
+                    }
+                });
+                raft.timeout(model, server1);
+                return function() {
+                    // 确保Server 1是leader且获得了多数服务器的投票
+                    return server1.state === 'leader' && 
+                           util.countTrue(util.mapValues(server1.voteGranted)) + 1 > Math.floor(NUM_SERVERS / 2);
+                };
+            },
+            
+            // 步骤2: 向Server 1发送第一个请求
+            function() {
+                raft.log('步骤2: 向Server 1发送第一个请求...');
+                var server1 = model.servers[0];
+                raft.clientRequest(model, server1);
+                return function() {
+                    // 确保请求被复制到大多数服务器
+                    var replicatedCount = 1; // leader自己
+                    model.servers.forEach(function(server) {
+                        if (server.id !== server1.id && server.log.length >= 1) {
+                            replicatedCount++;
+                        }
+                    });
+                    return server1.log.length === 1 && replicatedCount > Math.floor(NUM_SERVERS / 2);
+                };
+            },
+            
+            // 步骤3: 向Server 1发送第二个请求
+            function() {
+                raft.log('步骤3: 向Server 1发送第二个请求...');
+                var server1 = model.servers[0];
+                raft.clientRequest(model, server1);
+                return function() {
+                    // 确保请求被复制到大多数服务器
+                    var replicatedCount = 1; // leader自己
+                    model.servers.forEach(function(server) {
+                        if (server.id !== server1.id && server.log.length >= 2) {
+                            replicatedCount++;
+                        }
+                    });
+                    return server1.log.length === 2 && replicatedCount > Math.floor(NUM_SERVERS / 2);
+                };
+            },
+            
+            // 步骤4: Server 1宕机
+            function() {
+                raft.log('步骤4: Server 1宕机..., Server 2成为leader...');
+                var server1 = model.servers[0];
+                var server2 = model.servers[1];
+                raft.stop(model, server1);
+                // 强制其他服务器的选举超时时间晚于Server 2
+                model.servers.forEach(function(server) {
+                  if (server.id !== 2) {
+                      server.electionAlarm = model.time + ELECTION_TIMEOUT * 2;
+                  }
+                });
+                return function() {
+                    return server1.state === 'stopped' && server2.state === 'leader';
+                };
+            },
+            
+            // 步骤5: 尝试向Server 1发送第三个请求（会失败）
+            function() {
+                raft.log('步骤5: 尝试向已宕机的Server 1发送请求...');
+                var server1 = model.servers[0];
+                raft.clientRequest(model, server1);
+                return function() {
+                    return true; // 直接进入下一步
+                };
+            },
+            
+            // 步骤7: Server 4和5宕机
+            function() {
+                raft.log('步骤6: Server 4和5宕机...');
+                raft.stop(model, model.servers[3]); // Server 4
+                raft.stop(model, model.servers[4]); // Server 5
+                return function() {
+                    return model.servers[3].state === 'stopped' && 
+                           model.servers[4].state === 'stopped';
+                };
+            },
+            
+            // 新增步骤: 在只有3个节点可用时向Server 2发送请求
+            function() {
+                raft.log('步骤7: 在只有2个节点可用时向Server 2发送请求...');
+                var server2 = model.servers[1];
+                raft.clientRequest(model, server2);
+                return function() {
+                    return true;
+                };
+            },
+            
+            // 步骤8: Server 4恢复
+            function() {
+                raft.log('步骤8: Server 4恢复...');
+                raft.resume(model, model.servers[3]);
+                return function() {
+                    // 确保Server 4恢复并同步了日志
+                    var server2 = model.servers[1]; // 当前leader
+                    var server4 = model.servers[3];
+                    return server4.state === 'follower' && server4.log.length === server2.log.length;
+                };
+            },
+            
+            // 步骤9: Server 2重新成为leader
+            function() {
+                raft.log('步骤9: 等待Server 2重新成为leader...');
+                return function() {
+                    var server2 = model.servers[1];
+                    return server2.state === 'leader' && 
+                           util.countTrue(util.mapValues(server2.voteGranted)) + 1 > Math.floor(NUM_SERVERS / 2);
+                };
+            },
+            
+            // 步骤10: 向Server 2发送请求
+            function() {
+                raft.log('步骤10: 向Server 2发送请求...');
+                var server2 = model.servers[1];
+                raft.clientRequest(model, server2);
+                return function() {
+                    // 确保请求被复制到大多数可用的服务器
+                    var replicatedCount = 1; // leader自己
+                    model.servers.forEach(function(server) {
+                        if (server.state !== 'stopped' && 
+                            server.id !== server2.id && 
+                            server.log.length === server2.log.length) {
+                            replicatedCount++;
+                        }
+                    });
+                    return server2.log.length > 2 && replicatedCount > Math.floor(NUM_SERVERS / 2);
+                };
+            },
+            
+            // 步骤11: Server 1恢复并同步日志
+            function() {
+                raft.log('步骤11: Server 1恢复并等待日志同步...');
+                raft.resume(model, model.servers[0]);
+                return function() {
+                    var server1 = model.servers[0];
+                    var server2 = model.servers[1];
+                    // 确保Server 1完全同步了所有日志
+                    return server1.state === 'follower' && 
+                           server1.log.length === server2.log.length &&
+                           server1.commitIndex === server2.commitIndex;
+                };
+            }
+        ];
+        
+        var currentStepStartTime = model.time;
+        var maxStepTime = ELECTION_TIMEOUT * 20; // 增加最大等待时间
+        // 增加步骤间等待时间，确保有足够的心跳
+        var minHeartbeats = 2; // 增加到10次心跳
+        var stepWaitTime = (ELECTION_TIMEOUT / 2) * minHeartbeats;
+        
+        var updateInterval = setInterval(function() {
+            // 检查是否暂停
+            if (playback.isPaused()) {
+                return;
+            }
+            
+            // 每次只更新一次状态机，让交互更容易观察
+            raft.update(model);
+            
+            // 检查当前步骤是否完成
+            if (currentStep < steps.length) {
+                // 首次执行当前步骤
+                if (!steps[currentStep].checker) {
+                    steps[currentStep].checker = steps[currentStep]();
+                    currentStepStartTime = model.time;
+                    steps[currentStep].startTime = Date.now();
+                }
+                
+                // 检查步骤是否完成
+                if (steps[currentStep].checker() && !steps[currentStep].completed) {
+                    // 确保经过了足够的心跳时间
+                    var elapsedTime = model.time - currentStepStartTime;
+                    if (elapsedTime >= stepWaitTime) {
+                        steps[currentStep].completed = true;
+                        raft.log('完成步骤 ' + (currentStep + 1));
+                        
+                        // 在进入下一步之前额外等待一段时间
+                        setTimeout(function() {
+                            if (!playback.isPaused()) {  // 检查是否暂停
+                                currentStep++;
+                                if (currentStep < steps.length) {
+                                    currentStepStartTime = model.time;
+                                    raft.log('开始步骤 ' + (currentStep + 1));
+                                } else {
+                                    // 所有步骤完成
+                                    clearInterval(updateInterval);
+                                    raft.log('测试完成！');
+                                    resolve({ success: true });
+                                }
+                            }
+                        }, 2000); // 步骤之间等待2秒
+                    }
+                } else if (model.time - currentStepStartTime > maxStepTime) {
+                    // 步骤超时
+                    clearInterval(updateInterval);
+                    raft.log('步骤 ' + (currentStep + 1) + ' 超时');
+                    resolve({ success: false, message: '步骤 ' + (currentStep + 1) + ' 超时' });
+                }
+            }
+            
+            // 使用与script.js相同的速度计算逻辑
+            var wallMicrosElapsed = 50 * 1000; // 50ms转换为微秒
+            var speed = speedSliderTransform($('#speed').slider('getValue'));
+            var modelMicrosElapsed = wallMicrosElapsed / speed;
+            
+            if (!playback.isPaused()) {
+                model.time += modelMicrosElapsed;
+            }
+        }, 50);
+        
+        // 添加清理函数
+        return {
+            then: function(callback) {
+                resolve = callback;
+            },
+            stop: function() {
+                clearInterval(updateInterval);
+            }
+        };
+    });
 };
 
 })();

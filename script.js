@@ -777,5 +777,43 @@ state.updater = function(state) {
 
 state.init();
 render.update();
+
+// 添加复杂场景测试按钮事件处理
+$('#test-complex-scenario').click(function() {
+  // 暂停当前的播放
+  playback.pause();
+  
+  // 重置所有服务器状态
+  state.current.servers.forEach(function(server) {
+    server.state = 'follower';
+    server.term = 1;
+    server.votedFor = null;
+    server.log = [];
+    server.commitIndex = 0;
+    server.electionAlarm = raft.makeElectionAlarm(state.current.time);
+  });
+  
+  // 清空消息队列
+  state.current.messages = [];
+  
+  // 运行测试
+  raft.testComplexScenario(state.current).then(function(result) {
+    if (result.success) {
+      raft.log('复杂场景测试完成！');
+    } else {
+      raft.log('测试失败：' + result.message);
+    }
+  });
+  
+  // 启动定时更新视图
+  var updateInterval = setInterval(function() {
+    render.update();
+  }, 100);
+  
+  // 60秒后停止更新
+  setTimeout(function() {
+    clearInterval(updateInterval);
+  }, 60000);
+});
 });
 
