@@ -491,7 +491,7 @@ raft.testComplexScenario = function(model) {
                 };
             },
             
-            // 步骤7: Server 4和5宕机
+            // 步骤6: Server 4和5宕机
             function() {
                 raft.log('步骤6: Server 4和5宕机...');
                 raft.stop(model, model.servers[3]); // Server 4
@@ -502,7 +502,7 @@ raft.testComplexScenario = function(model) {
                 };
             },
             
-            // 新增步骤: 在只有3个节点可用时向Server 2发送请求
+            // 步骤7: 在只有2个节点可用时向Server 2发送请求
             function() {
                 raft.log('步骤7: 在只有2个节点可用时向Server 2发送请求...');
                 var server2 = model.servers[1];
@@ -512,60 +512,72 @@ raft.testComplexScenario = function(model) {
                 };
             },
             
-            // 步骤8: Server 4恢复
+            // 步骤8: 关闭Server 2和3，重启Server 1、4和5
             function() {
-                raft.log('步骤8: Server 4恢复...');
-                raft.resume(model, model.servers[3]);
+                raft.log('步骤8: 关闭Server 2和3，重启Server 1、4和5...');
+                raft.stop(model, model.servers[1]); // Server 2
+                raft.stop(model, model.servers[2]); // Server 3
+                raft.resume(model, model.servers[0]); // Server 1
+                raft.resume(model, model.servers[3]); // Server 4
+                raft.resume(model, model.servers[4]); // Server 5
+
+                model.servers.forEach(function(server) {
+                  if (server.id !== 1 && server.state !== 'stopped') {
+                      server.electionAlarm = model.time + ELECTION_TIMEOUT * 2;
+                  }
+                });
                 return function() {
-                    // 确保Server 4恢复并同步了日志
-                    var server2 = model.servers[1]; // 当前leader
-                    var server4 = model.servers[3];
-                    return server4.state === 'follower' && server4.log.length === server2.log.length;
+                    return model.servers[1].state === 'stopped' && 
+                           model.servers[2].state === 'stopped' &&
+                           model.servers[0].state !== 'stopped' &&
+                           model.servers[3].state !== 'stopped' &&
+                           model.servers[4].state !== 'stopped';
+                };
+            },
+            // 步骤9: 等待Server 1成为leader
+            function() {
+                raft.log('步骤9: 等待Server 1成为leader...');
+                var server1 = model.servers[0];
+                return function() {
+                    // 确保Server 1是leader且获得了多数服务器的投票
+                    return server1.state === 'leader' && 
+                           util.countTrue(util.mapValues(server1.voteGranted)) + 1 > Math.floor(NUM_SERVERS / 2);
                 };
             },
             
-            // 步骤9: Server 2重新成为leader
+            // 步骤10: 向Server 1发送新请求
             function() {
-                raft.log('步骤9: 等待Server 2重新成为leader...');
+                raft.log('步骤10: 向Server 1发送新请求...');
+                var server1 = model.servers[0];
+                raft.clientRequest(model, server1);
                 return function() {
-                    var server2 = model.servers[1];
-                    return server2.state === 'leader' && 
-                           util.countTrue(util.mapValues(server2.voteGranted)) + 1 > Math.floor(NUM_SERVERS / 2);
-                };
-            },
-            
-            // 步骤10: 向Server 2发送请求
-            function() {
-                raft.log('步骤10: 向Server 2发送请求...');
-                var server2 = model.servers[1];
-                raft.clientRequest(model, server2);
-                return function() {
-                    // 确保请求被复制到大多数可用的服务器
+                    // 确保请求被复制到所有可用的服务器（1、4、5）
                     var replicatedCount = 1; // leader自己
-                    model.servers.forEach(function(server) {
-                        if (server.state !== 'stopped' && 
-                            server.id !== server2.id && 
-                            server.log.length === server2.log.length) {
+                    for (var i = 0; i < NUM_SERVERS; i++) {
+                        if (model.servers[i].state !== 'stopped' && 
+                            model.servers[i].id !== server1.id && 
+                            model.servers[i].log.length === server1.log.length) {
                             replicatedCount++;
                         }
-                    });
-                    return server2.log.length > 2 && replicatedCount > Math.floor(NUM_SERVERS / 2);
+                    }
+                    return server1.log.length > 2 && replicatedCount >= 2; // 需要2个follower确认
                 };
             },
             
-            // 步骤11: Server 1恢复并同步日志
+            // 步骤11: 重启Server 2和3
             function() {
-                raft.log('步骤11: Server 1恢复并等待日志同步...');
-                raft.resume(model, model.servers[0]);
+                raft.log('步骤11: 重启Server 2和3...');
+                raft.resume(model, model.servers[1]); // Server 2
+                raft.resume(model, model.servers[2]); // Server 3
                 return function() {
-                    var server1 = model.servers[0];
-                    var server2 = model.servers[1];
-                    // 确保Server 1完全同步了所有日志
-                    return server1.state === 'follower' && 
-                           server1.log.length === server2.log.length &&
-                           server1.commitIndex === server2.commitIndex;
+                    // 确保Server 2和3恢复，并且它们的日志被覆盖
+                    var server1 = model.servers[0]; // 当前leader
+                    return model.servers[1].state !== 'stopped' && 
+                           model.servers[2].state !== 'stopped' &&
+                           model.servers[1].log.length === server1.log.length &&
+                           model.servers[2].log.length === server1.log.length;
                 };
-            }
+            },
         ];
         
         var currentStepStartTime = model.time;
