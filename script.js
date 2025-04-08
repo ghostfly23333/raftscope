@@ -815,5 +815,43 @@ $('#test-complex-scenario').click(function() {
     clearInterval(updateInterval);
   }, 60000);
 });
+
+// 添加提交规则演示按钮事件处理
+$('#submit-rule-demo').click(function() {
+  // 暂停当前的播放
+  playback.pause();
+  
+  // 重置所有服务器状态
+  state.current.servers.forEach(function(server) {
+    server.state = 'follower';
+    server.term = 1;
+    server.votedFor = null;
+    server.log = [];
+    server.commitIndex = 0;
+    server.electionAlarm = raft.makeElectionAlarm(state.current.time);
+  });
+  
+  // 清空消息队列
+  state.current.messages = [];
+  
+  // 运行规则演示
+  raft.submitRuleDemo(state.current).then(function(result) {
+    if (result.success) {
+      raft.log('规则演示完成！');
+    } else {
+      raft.log('演示失败：' + result.message);
+    }
+  });
+  
+  // 启动定时更新视图
+  var updateInterval = setInterval(function() {
+    render.update();
+  }, 100);
+  
+  // 60秒后停止更新
+  setTimeout(function() {
+    clearInterval(updateInterval);
+  }, 60000);
+});
 });
 

@@ -12,6 +12,7 @@ var MAX_RPC_LATENCY = 15000;
 var ELECTION_TIMEOUT = 100000;
 var NUM_SERVERS = 5;
 var BATCH_SIZE = 1;
+raft.enableAppendEntries = true;  // 添加控制变量
 
 (function() {
 
@@ -125,8 +126,29 @@ rules.becomeLeader = function(model, server) {
 rules.sendAppendEntries = function(model, server, peer) {
   if (server.state == 'leader' &&
       (server.heartbeatDue[peer] <= model.time ||
-       (server.nextIndex[peer] <= server.log.length &&
+       (raft.enableAppendEntries && server.nextIndex[peer] <= server.log.length &&
         server.rpcDue[peer] <= model.time))) {
+    var prevIndex = server.nextIndex[peer] - 1;
+    var lastIndex = Math.min(prevIndex + BATCH_SIZE,
+                             server.log.length);
+    if (server.matchIndex[peer] + 1 < server.nextIndex[peer])
+      lastIndex = prevIndex;
+    sendRequest(model, {
+      from: server.id,
+      to: peer,
+      type: 'AppendEntries',
+      term: server.term,
+      prevIndex: prevIndex,
+      prevTerm: logTerm(server.log, prevIndex),
+      entries: raft.enableAppendEntries ? server.log.slice(prevIndex, lastIndex) : [],
+      commitIndex: Math.min(server.commitIndex, lastIndex)});
+    server.rpcDue[peer] = model.time + RPC_TIMEOUT;
+    server.heartbeatDue[peer] = model.time + ELECTION_TIMEOUT / 2;
+  }
+};
+
+rules.sendAppendEntriesToSome = function(model, server, peer) {
+  if (server.state == 'leader') {
     var prevIndex = server.nextIndex[peer] - 1;
     var lastIndex = Math.min(prevIndex + BATCH_SIZE,
                              server.log.length);
@@ -624,7 +646,7 @@ raft.testComplexScenario = function(model) {
                     var elapsedTime = model.time - currentStepStartTime;
                     if (elapsedTime >= stepWaitTime) {
                         steps[currentStep].completed = true;
-                        raft.log('完成步骤 ' + (currentStep + 1));
+                        raft.log('步骤' + (currentStep + 1)+': 完成');
                         
                         // 在进入下一步之前额外等待一段时间
                         setTimeout(function() {
@@ -632,7 +654,7 @@ raft.testComplexScenario = function(model) {
                                 currentStep++;
                                 if (currentStep < steps.length) {
                                     currentStepStartTime = model.time;
-                                    raft.log('开始步骤 ' + (currentStep + 1));
+                                    // raft.log('开始步骤 ' + (currentStep + 1));
                                 } else {
                                     // 所有步骤完成
                                     clearInterval(updateInterval);
@@ -669,6 +691,221 @@ raft.testComplexScenario = function(model) {
                 clearInterval(updateInterval);
             }
         };
+    });
+};
+
+// 提交规则演示
+raft.submitRuleDemo = function(model) {
+    // 清空日志
+    $('#log-container').empty();
+    
+    return new Promise(function(resolve) {
+        var startTime = model.time;
+        var currentStep = 0;
+        var steps = [
+            // 步骤1: Server 1 成为 leader
+            function() {
+                raft.log('步骤1: 等待Server 1成为leader...');
+                var server1 = model.servers[0];
+                // 强制其他服务器的选举超时时间晚于Server 1
+                model.servers.forEach(function(server) {
+                    if (server.id !== 1) {
+                        server.electionAlarm = model.time + ELECTION_TIMEOUT * 2;
+                    }
+                });
+                raft.timeout(model, server1);
+                return function() {
+                    // 确保Server 1是leader且获得了多数服务器的投票
+                    return server1.state === 'leader' && 
+                           util.countTrue(util.mapValues(server1.voteGranted)) + 1 > Math.floor(NUM_SERVERS / 2);
+                };
+            },
+            
+            // 步骤2: 向Server 1发送请求
+            function() {
+                raft.log('步骤2: 向Server 1发送请求...');
+                var server1 = model.servers[0];
+                raft.clientRequest(model, server1);
+                return function() {
+                    // 确保请求被复制到大多数服务器
+                    var replicatedCount = 1; // leader自己
+                    model.servers.forEach(function(server) {
+                        if (server.id !== server1.id && server.log.length >= 1) {
+                            replicatedCount++;
+                        }
+                    });
+                    return server1.log.length === 1 && replicatedCount > Math.floor(NUM_SERVERS / 2);
+                };
+            },
+
+            // 步骤3
+            function() {
+              raft.log('步骤3: Network Partition! 只跟server 2同步了新请求...');
+              var server1 = model.servers[0];
+              var server2 = model.servers[1];
+              raft.clientRequest(model, server1);
+              raft.enableAppendEntries = false;
+              rules.sendAppendEntriesToSome(model, server1, 2);
+              rules.sendAppendEntriesToSome(model, server1, 2);
+
+              return function() {
+                  // 确保server 2的日志长度为2
+                  return server2.log.length === 2;
+              };
+          },
+
+          // 步骤4: server 1 宕机
+          function() {
+            raft.log('步骤4: server 1宕机, server 5成为leader...');
+            var server1 = model.servers[0];
+            var server5 = model.servers[4];
+            raft.stop(model, server1);
+             // 强制其他服务器的选举超时时间晚于Server 5
+             model.servers.forEach(function(server) {
+              if (server.id !== 5) {
+                  server.electionAlarm = model.time + ELECTION_TIMEOUT * 2;
+              }
+            });
+            server5.electionAlarm = model.time + ELECTION_TIMEOUT;
+            return function() {
+                return server5.state === 'leader' && 
+                       util.countTrue(util.mapValues(server5.voteGranted)) + 1 > Math.floor(NUM_SERVERS / 2);
+            };
+          },
+
+          // 步骤5: 向server 5发送新请求
+          function() {
+            raft.log('步骤5: 向server 5发送新请求...');
+            var server5 = model.servers[4];
+            raft.clientRequest(model, server5);
+            return function() {
+                return server5.log.length === 2;
+            };  
+          },
+          //步骤6: server 5 宕机, server 1 成为leader
+          function() {
+            raft.log('步骤6: server 5宕机, server 1成为leader...');
+            var server1 = model.servers[0];
+            var server5 = model.servers[4];
+            raft.resume(model, server1);
+            raft.stop(model, server5);
+            // 强制其他服务器的选举超时时间晚于Server 1
+            server1.electionAlarm = model.time + ELECTION_TIMEOUT;
+            model.servers.forEach(function(server) {
+              if (server.id !== 1) {
+                  server.electionAlarm = model.time + ELECTION_TIMEOUT * 2;
+              }
+            });
+            return function() {
+                return server1.state === 'leader';
+            };
+          },
+
+          // 步骤7: 向server 1发送新请求
+          function() {
+            raft.log('步骤7: 向server 1发送新请求...');
+            var server1 = model.servers[0];
+            raft.clientRequest(model, server1);
+            raft.log('步骤7: server 1 append了部分旧entry');
+            rules.sendAppendEntriesToSome(model, server1, 3);
+            return function() {
+                return server1.log.length === 3;
+            };
+          },
+          // 步骤8: server 1 宕机, server 5 成为leader
+          function() {
+            raft.log('步骤8: server 1同步entry时宕机, server 5成为leader...');
+            var server1 = model.servers[0];
+            var server5 = model.servers[4];
+            raft.resume(model, server5);
+            raft.stop(model, server1);
+            // 强制其他服务器的选举超时时间晚于Server 5
+            server5.electionAlarm = model.time + ELECTION_TIMEOUT;
+            model.servers.forEach(function(server) {
+              if (server.id !== 5) {
+                  server.electionAlarm = model.time + ELECTION_TIMEOUT * 2;
+              }
+            });
+            return function() {
+                return server5.state === 'leader';
+            };
+          },  
+
+          // 步骤9: 向server 5发送新请求
+          function() {
+            raft.log('步骤9: 向server 5发送新请求并append到follower...');
+            var server1 = model.servers[0];
+            var server5 = model.servers[4];
+            raft.resume(model, server1);
+            raft.enableAppendEntries = true;
+            raft.clientRequest(model, server5);
+            return function() {
+                var replicatedCount = 1; // leader自己
+                model.servers.forEach(function(server) {
+                    // raft.log('server'+server.id+' length '+server.log.length);
+                    if (server.id !== server5.id && server.log.length === server5.log.length) {
+                        replicatedCount++;
+                    }
+                });
+                return server5.log.length === 3 && replicatedCount == NUM_SERVERS;
+            };
+          }
+        ];
+        
+        var currentStepStartTime = model.time;
+        var maxStepTime = ELECTION_TIMEOUT * 20;
+        var minHeartbeats = 2;
+        var stepWaitTime = (ELECTION_TIMEOUT / 2) * minHeartbeats;
+        
+        var updateInterval = setInterval(function() {
+            // 检查是否暂停
+            if (playback.isPaused()) {
+                return;
+            }
+            
+            // 每次只更新一次状态机，让交互更容易观察
+            raft.update(model);
+            
+            // 检查当前步骤是否完成
+            if (currentStep < steps.length) {
+                // 首次执行当前步骤
+                if (!steps[currentStep].checker) {
+                    steps[currentStep].checker = steps[currentStep]();
+                    currentStepStartTime = model.time;
+                    steps[currentStep].startTime = Date.now();
+                }
+                
+                // 检查步骤是否完成
+                if (steps[currentStep].checker() && !steps[currentStep].completed) {
+                    // 确保经过了足够的心跳时间
+                    var elapsedTime = model.time - currentStepStartTime;
+                    if (elapsedTime >= stepWaitTime) {
+                        steps[currentStep].completed = true;
+                        raft.log('步骤' + (currentStep + 1) + ': 完成');
+                        
+                        // 在进入下一步之前额外等待一段时间
+                        setTimeout(function() {
+                            if (!playback.isPaused()) {
+                                currentStep++;
+                                if (currentStep < steps.length) {
+                                    currentStepStartTime = model.time;
+                                } else {
+                                    // 所有步骤完成
+                                    clearInterval(updateInterval);
+                                    raft.log('规则演示完成！');
+                                    resolve({ success: true });
+                                }
+                            }
+                        }, 2000);
+                    }
+                } else if (model.time - currentStepStartTime > maxStepTime) {
+                    // 步骤超时
+                    clearInterval(updateInterval);
+                    raft.log('步骤 ' + (currentStep + 1) + ' 超时');
+                    resolve({ success: false, message: '步骤 ' + (currentStep + 1) + ' 超时' });
+                }
+            }
+        }, 100);
     });
 };
 
