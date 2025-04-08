@@ -422,7 +422,7 @@ raft.testComplexScenario = function(model) {
                         server.electionAlarm = model.time + ELECTION_TIMEOUT * 2;
                     }
                 });
-                raft.timeout(model, server1);
+                server1.electionAlarm = model.time + ELECTION_TIMEOUT;
                 return function() {
                     // 确保Server 1是leader且获得了多数服务器的投票
                     return server1.state === 'leader' && 
@@ -476,12 +476,13 @@ raft.testComplexScenario = function(model) {
                       server.electionAlarm = model.time + ELECTION_TIMEOUT * 2;
                   }
                 });
+                server2.electionAlarm = model.time + ELECTION_TIMEOUT;
                 return function() {
                     return server1.state === 'stopped' && server2.state === 'leader';
                 };
             },
             
-            // 步骤5: 尝试向Server 1发送第三个请求（会失败）
+            // 步骤5: 尝试向Server 1发送第三个请求（会失败）s
             function() {
                 raft.log('步骤5: 尝试向已宕机的Server 1发送请求...');
                 var server1 = model.servers[0];
@@ -512,20 +513,33 @@ raft.testComplexScenario = function(model) {
                 };
             },
             
-            // 步骤8: 关闭Server 2和3，重启Server 1、4和5
+            // 步骤8: 关闭Server 2和3
             function() {
-                raft.log('步骤8: 关闭Server 2和3，重启Server 1、4和5...');
+                raft.log('步骤8: 关闭Server 2和3...');
                 raft.stop(model, model.servers[1]); // Server 2
                 raft.stop(model, model.servers[2]); // Server 3
+                return function() {
+                    return model.servers[1].state === 'stopped' && 
+                           model.servers[2].state === 'stopped';
+                }
+            },
+            // 步骤9: 重启Server 1、4和5
+            function() {
+                raft.log('步骤9: 重启Server 1、4和5...');
                 raft.resume(model, model.servers[0]); // Server 1
                 raft.resume(model, model.servers[3]); // Server 4
                 raft.resume(model, model.servers[4]); // Server 5
-
+                var server5 = model.servers[4];
                 model.servers.forEach(function(server) {
-                  if (server.id !== 1 && server.state !== 'stopped') {
+                  if (server.id !== 5 && server.state !== 'stopped') {
                       server.electionAlarm = model.time + ELECTION_TIMEOUT * 2;
                   }
                 });
+                // for (var i = 1; i < NUM_SERVERS; i++) {
+                //   raft.log('Server ' + i + ' state: ' + model.servers[i].state);
+                //   raft.log('Server ' + i + ' electionAlarm: ' + model.servers[i].electionAlarm);
+                // }
+                server5.electionAlarm = model.time + ELECTION_TIMEOUT;
                 return function() {
                     return model.servers[1].state === 'stopped' && 
                            model.servers[2].state === 'stopped' &&
@@ -534,33 +548,33 @@ raft.testComplexScenario = function(model) {
                            model.servers[4].state !== 'stopped';
                 };
             },
-            // 步骤9: 等待Server 1成为leader
+            // 步骤10: 等待Server 5成为leader
             function() {
-                raft.log('步骤9: 等待Server 1成为leader...');
-                var server1 = model.servers[0];
+                raft.log('步骤10: 等待Server 1成为leader...');
+                var server5 = model.servers[4]; 
                 return function() {
-                    // 确保Server 1是leader且获得了多数服务器的投票
-                    return server1.state === 'leader' && 
-                           util.countTrue(util.mapValues(server1.voteGranted)) + 1 > Math.floor(NUM_SERVERS / 2);
+                    // 确保Server 5是leader且获得了多数服务器的投票
+                    return server5.state === 'leader' && 
+                           util.countTrue(util.mapValues(server5.voteGranted)) + 1 > Math.floor(NUM_SERVERS / 2);
                 };
             },
             
-            // 步骤10: 向Server 1发送新请求
+            // 步骤11: 向Server 1发送新请求
             function() {
-                raft.log('步骤10: 向Server 1发送新请求...');
-                var server1 = model.servers[0];
-                raft.clientRequest(model, server1);
+                raft.log('步骤11: 向Server 5发送新请求...');
+                var server5 = model.servers[4];
+                raft.clientRequest(model, server5);
                 return function() {
                     // 确保请求被复制到所有可用的服务器（1、4、5）
                     var replicatedCount = 1; // leader自己
                     for (var i = 0; i < NUM_SERVERS; i++) {
                         if (model.servers[i].state !== 'stopped' && 
-                            model.servers[i].id !== server1.id && 
-                            model.servers[i].log.length === server1.log.length) {
+                            model.servers[i].id !== server5.id && 
+                            model.servers[i].log.length === server5.log.length) {
                             replicatedCount++;
                         }
                     }
-                    return server1.log.length > 2 && replicatedCount >= 2; // 需要2个follower确认
+                    return server5.log.length > 2 && replicatedCount >= 2; // 需要2个follower确认
                 };
             },
             
@@ -571,19 +585,19 @@ raft.testComplexScenario = function(model) {
                 raft.resume(model, model.servers[2]); // Server 3
                 return function() {
                     // 确保Server 2和3恢复，并且它们的日志被覆盖
-                    var server1 = model.servers[0]; // 当前leader
+                    var server5 = model.servers[4]; // 当前leader
                     return model.servers[1].state !== 'stopped' && 
                            model.servers[2].state !== 'stopped' &&
-                           model.servers[1].log.length === server1.log.length &&
-                           model.servers[2].log.length === server1.log.length;
+                           model.servers[1].log.length === server5.log.length &&
+                           model.servers[2].log.length === server5.log.length;
                 };
             },
         ];
         
         var currentStepStartTime = model.time;
-        var maxStepTime = ELECTION_TIMEOUT * 20; // 增加最大等待时间
+        var maxStepTime = ELECTION_TIMEOUT * 10; // 增加最大等待时间
         // 增加步骤间等待时间，确保有足够的心跳
-        var minHeartbeats = 2; // 增加到10次心跳
+        var minHeartbeats = 1; // 增加到10次心跳
         var stepWaitTime = (ELECTION_TIMEOUT / 2) * minHeartbeats;
         
         var updateInterval = setInterval(function() {
@@ -626,7 +640,7 @@ raft.testComplexScenario = function(model) {
                                     resolve({ success: true });
                                 }
                             }
-                        }, 2000); // 步骤之间等待2秒
+                        }, 1000); // 步骤之间等待2秒
                     }
                 } else if (model.time - currentStepStartTime > maxStepTime) {
                     // 步骤超时
