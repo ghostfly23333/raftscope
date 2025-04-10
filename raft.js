@@ -815,10 +815,10 @@ raft.submitRuleDemo = function(model) {
             raft.log('步骤7: 向Server 1发送新请求');
             var server1 = model.servers[0];
             var server3 = model.servers[2];
-            rules.sendAppendEntriesToSome(model, server1, 3);
-            rules.sendAppendEntriesToSome(model, server1, 3);
-            rules.sendAppendEntriesToSome(model, server1, 3);
             raft.clientRequest(model, server1);
+            rules.sendAppendEntriesToSome(model, server1, 3);
+            setTimeout(() => rules.sendAppendEntriesToSome(model, server1, 3), 1000)
+            rules.sendAppendEntriesToSome(model, server1, 3);
             raft.log('步骤7: Server 1 Append了部分旧Entry');
             return function() {
                 return server1.log.length === 3 && server3.log.length === 2;
