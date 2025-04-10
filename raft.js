@@ -751,7 +751,7 @@ raft.submitRuleDemo = function(model) {
               var server1 = model.servers[0];
               var server2 = model.servers[1];
               raft.clientRequest(model, server1);
-              raft.log('步骤3: Network Partition! 只有Server 2收到了AppendEntry');
+              raft.log('步骤3: 网络故障! 只有Server 2收到了AppendEntry');
               raft.enableAppendEntries = false;
               rules.sendAppendEntriesToSome(model, server1, 2);
               rules.sendAppendEntriesToSome(model, server1, 2);
@@ -910,7 +910,7 @@ raft.submitRuleDemo = function(model) {
                                     resolve({ success: true });
                                 }
                             }
-                        }, 2000);
+                        }, 1000);
                     }
                 } else if (model.time - currentStepStartTime > maxStepTime) {
                     // 步骤超时
