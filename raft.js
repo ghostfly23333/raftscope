@@ -711,7 +711,7 @@ raft.submitRuleDemo = function(model) {
         var steps = [
             // 步骤1: Server 1 成为 leader
             function() {
-                raft.log('步骤1: 等待Server 1成为leader...');
+                raft.log('步骤1: 初始Leader为Server 1');
                 var server1 = model.servers[0];
                 // 强制其他服务器的选举超时时间晚于Server 1
                 model.servers.forEach(function(server) {
@@ -729,7 +729,7 @@ raft.submitRuleDemo = function(model) {
             
             // 步骤2: 向Server 1发送请求
             function() {
-                raft.log('步骤2: 向Server 1发送请求...');
+                raft.log('步骤2: 向Server 1发送请求，并等待其提交');
                 var server1 = model.servers[0];
                 raft.clientRequest(model, server1);
                 return function() {
@@ -746,10 +746,12 @@ raft.submitRuleDemo = function(model) {
 
             // 步骤3
             function() {
-              raft.log('步骤3: Network Partition! 只跟server 2同步了新请求...');
+              raft.log('步骤3: 再次发起请求');
+
               var server1 = model.servers[0];
               var server2 = model.servers[1];
               raft.clientRequest(model, server1);
+              raft.log('步骤3: Network Partition! 只有Server 2收到了AppendEntry');
               raft.enableAppendEntries = false;
               rules.sendAppendEntriesToSome(model, server1, 2);
               rules.sendAppendEntriesToSome(model, server1, 2);
@@ -762,7 +764,7 @@ raft.submitRuleDemo = function(model) {
 
           // 步骤4: server 1 宕机
           function() {
-            raft.log('步骤4: server 1宕机, server 5成为leader...');
+            raft.log('步骤4: Server 1网络故障, Server 5成为Leader');
             var server1 = model.servers[0];
             var server5 = model.servers[4];
             raft.networkFailure(model, server1);
@@ -781,16 +783,17 @@ raft.submitRuleDemo = function(model) {
 
           // 步骤5: 向server 5发送新请求
           function() {
-            raft.log('步骤5: 向server 5发送新请求...');
+            raft.log('步骤5: 向Server 5发送新请求');
             var server5 = model.servers[4];
             raft.clientRequest(model, server5);
+            raft.log('步骤5: 但Server 5还没AppendEntry');
             return function() {
                 return server5.log.length === 2;
             };  
           },
           //步骤6: server 5 宕机, server 1 成为leader
           function() {
-            raft.log('步骤6: server 5宕机, server 1成为leader...');
+            raft.log('步骤6: Server 5网络故障, Server 1网络恢复成为Leader');
             var server1 = model.servers[0];
             var server5 = model.servers[4];
             raft.networkRecovery(model, server1);
@@ -809,18 +812,22 @@ raft.submitRuleDemo = function(model) {
 
           // 步骤7: 向server 1发送新请求
           function() {
-            raft.log('步骤7: 向server 1发送新请求...');
+            raft.log('步骤7: 向Server 1发送新请求');
             var server1 = model.servers[0];
-            raft.clientRequest(model, server1);
-            raft.log('步骤7: server 1 append了部分旧entry');
+            var server3 = model.servers[2];
             rules.sendAppendEntriesToSome(model, server1, 3);
+            rules.sendAppendEntriesToSome(model, server1, 3);
+            rules.sendAppendEntriesToSome(model, server1, 3);
+            raft.clientRequest(model, server1);
+            raft.log('步骤7: Server 1 Append了部分旧Entry');
             return function() {
-                return server1.log.length === 3;
+                return server1.log.length === 3 && server3.log.length === 2;
             };
           },
           // 步骤8: server 1 宕机, server 5 成为leader
           function() {
-            raft.log('步骤8: server 1同步entry时宕机, server 5成为leader...');
+            raft.log('步骤8: Server 1同步Entry时网络故障');
+            raft.log('步骤8: Server 5成为Leader');
             var server1 = model.servers[0];
             var server5 = model.servers[4];
             raft.networkRecovery(model, server5);
@@ -839,7 +846,7 @@ raft.submitRuleDemo = function(model) {
 
           // 步骤9: 向server 5发送新请求
           function() {
-            raft.log('步骤9: 向server 5发送新请求并append到follower...');
+            raft.log('步骤9: 向Server 5发送新请求并Append到Follower');
             var server1 = model.servers[0];
             var server5 = model.servers[4];
             raft.networkRecovery(model, server1);
@@ -899,6 +906,7 @@ raft.submitRuleDemo = function(model) {
                                     // 所有步骤完成
                                     clearInterval(updateInterval);
                                     raft.log('规则演示完成！');
+                                    raft.log('原本Server 1 Append到多数的log最后被Server 5覆盖！');
                                     resolve({ success: true });
                                 }
                             }
