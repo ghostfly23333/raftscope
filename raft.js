@@ -302,8 +302,19 @@ raft.update = function(model) {
   });
 };
 
+raft.networkFailure = function(model, server) {
+  server.state = 'stopped';
+  server.electionAlarm = 0;
+};
+
+raft.networkRecovery = function(model, server) {
+  server.state = 'follower';
+  server.electionAlarm = makeElectionAlarm(model.time);
+};
+
 raft.stop = function(model, server) {
   server.state = 'stopped';
+  server.log = server.log.slice(0, server.commitIndex);
   server.electionAlarm = 0;
 };
 
@@ -316,11 +327,6 @@ raft.resumeAll = function(model) {
   model.servers.forEach(function(server) {
     raft.resume(model, server);
   });
-};
-
-raft.restart = function(model, server) {
-  raft.stop(model, server);
-  raft.resume(model, server);
 };
 
 raft.drop = function(model, message) {
@@ -491,7 +497,7 @@ raft.testComplexScenario = function(model) {
                 raft.log('步骤4: Server 1宕机..., Server 2成为leader...');
                 var server1 = model.servers[0];
                 var server2 = model.servers[1];
-                raft.stop(model, server1);
+                raft.networkFailure(model, server1);
                 // 强制其他服务器的选举超时时间晚于Server 2
                 model.servers.forEach(function(server) {
                   if (server.id !== 2) {
@@ -516,9 +522,9 @@ raft.testComplexScenario = function(model) {
             
             // 步骤6: Server 4和5宕机
             function() {
-                raft.log('步骤6: Server 4和5宕机...');
-                raft.stop(model, model.servers[3]); // Server 4
-                raft.stop(model, model.servers[4]); // Server 5
+                raft.log('步骤6: Server 4和5网络故障...');
+                raft.networkFailure(model, model.servers[3]); // Server 4
+                raft.networkFailure(model, model.servers[4]); // Server 5
                 return function() {
                     return model.servers[3].state === 'stopped' && 
                            model.servers[4].state === 'stopped';
@@ -537,9 +543,9 @@ raft.testComplexScenario = function(model) {
             
             // 步骤8: 关闭Server 2和3
             function() {
-                raft.log('步骤8: 关闭Server 2和3...');
-                raft.stop(model, model.servers[1]); // Server 2
-                raft.stop(model, model.servers[2]); // Server 3
+                raft.log('步骤8: Server 2和3网络故障...');
+                raft.networkFailure(model, model.servers[1]); // Server 2
+                raft.networkFailure(model, model.servers[2]); // Server 3
                 return function() {
                     return model.servers[1].state === 'stopped' && 
                            model.servers[2].state === 'stopped';
@@ -547,10 +553,10 @@ raft.testComplexScenario = function(model) {
             },
             // 步骤9: 重启Server 1、4和5
             function() {
-                raft.log('步骤9: 重启Server 1、4和5...');
-                raft.resume(model, model.servers[0]); // Server 1
-                raft.resume(model, model.servers[3]); // Server 4
-                raft.resume(model, model.servers[4]); // Server 5
+                raft.log('步骤9: 恢复Server 1、4和5...');
+                raft.networkRecovery(model, model.servers[0]); // Server 1
+                raft.networkRecovery(model, model.servers[3]); // Server 4
+                raft.networkRecovery(model, model.servers[4]); // Server 5
                 var server5 = model.servers[4];
                 model.servers.forEach(function(server) {
                   if (server.id !== 5 && server.state !== 'stopped') {
@@ -572,7 +578,7 @@ raft.testComplexScenario = function(model) {
             },
             // 步骤10: 等待Server 5成为leader
             function() {
-                raft.log('步骤10: 等待Server 1成为leader...');
+                raft.log('步骤10: 等待Server 5成为leader...');
                 var server5 = model.servers[4]; 
                 return function() {
                     // 确保Server 5是leader且获得了多数服务器的投票
@@ -602,9 +608,9 @@ raft.testComplexScenario = function(model) {
             
             // 步骤11: 重启Server 2和3
             function() {
-                raft.log('步骤11: 重启Server 2和3...');
-                raft.resume(model, model.servers[1]); // Server 2
-                raft.resume(model, model.servers[2]); // Server 3
+                raft.log('步骤11: Server 2和3网络恢复...');
+                raft.networkRecovery(model, model.servers[1]); // Server 2
+                raft.networkRecovery(model, model.servers[2]); // Server 3
                 return function() {
                     // 确保Server 2和3恢复，并且它们的日志被覆盖
                     var server5 = model.servers[4]; // 当前leader
@@ -759,7 +765,7 @@ raft.submitRuleDemo = function(model) {
             raft.log('步骤4: server 1宕机, server 5成为leader...');
             var server1 = model.servers[0];
             var server5 = model.servers[4];
-            raft.stop(model, server1);
+            raft.networkFailure(model, server1);
              // 强制其他服务器的选举超时时间晚于Server 5
              model.servers.forEach(function(server) {
               if (server.id !== 5) {
@@ -787,8 +793,8 @@ raft.submitRuleDemo = function(model) {
             raft.log('步骤6: server 5宕机, server 1成为leader...');
             var server1 = model.servers[0];
             var server5 = model.servers[4];
-            raft.resume(model, server1);
-            raft.stop(model, server5);
+            raft.networkRecovery(model, server1);
+            raft.networkFailure(model, server5);
             // 强制其他服务器的选举超时时间晚于Server 1
             server1.electionAlarm = model.time + ELECTION_TIMEOUT;
             model.servers.forEach(function(server) {
@@ -817,8 +823,8 @@ raft.submitRuleDemo = function(model) {
             raft.log('步骤8: server 1同步entry时宕机, server 5成为leader...');
             var server1 = model.servers[0];
             var server5 = model.servers[4];
-            raft.resume(model, server5);
-            raft.stop(model, server1);
+            raft.networkRecovery(model, server5);
+            raft.networkFailure(model, server1);
             // 强制其他服务器的选举超时时间晚于Server 5
             server5.electionAlarm = model.time + ELECTION_TIMEOUT;
             model.servers.forEach(function(server) {
@@ -836,7 +842,7 @@ raft.submitRuleDemo = function(model) {
             raft.log('步骤9: 向server 5发送新请求并append到follower...');
             var server1 = model.servers[0];
             var server5 = model.servers[4];
-            raft.resume(model, server1);
+            raft.networkRecovery(model, server1);
             raft.enableAppendEntries = true;
             raft.clientRequest(model, server5);
             return function() {

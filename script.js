@@ -213,9 +213,10 @@ render.clock = function() {
 };
 
 var serverActions = [
+  ['network failure', raft.networkFailure],
+  ['network recovery', raft.networkRecovery],
   ['stop', raft.stop],
   ['resume', raft.resume],
-  ['restart', raft.restart],
   ['time out', raft.timeout],
   ['request', raft.clientRequest],
 ];
